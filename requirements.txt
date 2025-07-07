@@ -1,3 +1,4 @@
+Flask
 requests
-ttkbootstrap
+flask_socketio
 python-dotenv
