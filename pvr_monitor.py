@@ -83,12 +83,15 @@ def log_message(msg):
     socketio.emit('log_update', {'message': log_entry})
 
 def send_telegram(msg):
+    """Send message via Telegram bot with proper token handling"""
     if not BOT_TOKEN or not CHAT_ID:
-        log_message("❌ Telegram credentials not configured. Ensure BOT_TOKEN and CHAT_ID are set in environment variables.")
+        log_message("❌ Telegram not configured - missing BOT_TOKEN or CHAT_ID")
         return False
-    
+
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        base_url = f"https://api.telegram.org/bot{BOT_TOKEN}"
+        send_message_url = f"{base_url}/sendMessage"
+        
         params = {
             "chat_id": CHAT_ID,
             "text": msg,
@@ -96,22 +99,86 @@ def send_telegram(msg):
             "disable_web_page_preview": True
         }
         
-        start_time = time.time()
-        res = requests.post(url, json=params, timeout=10)
-        elapsed_time = (time.time() - start_time) * 1000  # in milliseconds
+        log_message(f"📤 Sending Telegram message to chat {CHAT_ID}")
+        response = requests.post(send_message_url, json=params, timeout=10)
+        response.raise_for_status()  # Raises exception for 4XX/5XX status codes
         
-        if res.status_code == 200:
-            log_message(f"📲 Telegram alert sent successfully! (Response time: {elapsed_time:.2f}ms)")
-            return True
-        else:
-            error_details = res.json().get("description", res.text)
-            log_message(f"❌ Telegram failed: HTTP {res.status_code} - {error_details}")
-            return False
-    except requests.exceptions.RequestException as e:
-        log_message(f"❌ Telegram connection error: {str(e)}")
-        return False
+        log_message("✅ Telegram message sent successfully")
+        return True
+        
+    except requests.exceptions.HTTPError as http_err:
+        error_msg = f"HTTP error occurred: {http_err}"
+        if response.status_code == 404:
+            error_msg += " (Invalid bot token or chat ID)"
+        elif response.status_code == 403:
+            error_msg += " (Bot blocked by user or no permissions)"
+        log_message(f"❌ {error_msg}")
+        
+    except requests.exceptions.RequestException as req_err:
+        log_message(f"❌ Request failed: {req_err}")
+        
     except Exception as e:
-        log_message(f"❌ Unexpected Telegram error: {str(e)}")
+        log_message(f"❌ Unexpected error: {e}")
+        
+    return False
+
+
+def verify_bot_token():
+    """Verify the bot token is valid"""
+    if not BOT_TOKEN:
+        log_message("❌ No BOT_TOKEN configured")
+        return False
+
+    try:
+        base_url = f"https://api.telegram.org/bot{BOT_TOKEN}"
+        get_me_url = f"{base_url}/getMe"
+        
+        response = requests.get(get_me_url, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        
+        if data.get('ok'):
+            bot_info = data['result']
+            log_message(f"🤖 Bot verified: @{bot_info.get('username')} ({bot_info.get('first_name')})")
+            return True
+            
+        log_message(f"❌ Invalid bot token response: {data.get('description')}")
+        return False
+        
+    except Exception as e:
+        log_message(f"❌ Bot verification failed: {e}")
+        return False
+
+
+def verify_chat_id():
+    """Verify the chat ID is accessible"""
+    if not BOT_TOKEN or not CHAT_ID:
+        return False
+
+    try:
+        base_url = f"https://api.telegram.org/bot{BOT_TOKEN}"
+        send_message_url = f"{base_url}/sendMessage"
+        
+        response = requests.post(
+            send_message_url,
+            json={"chat_id": CHAT_ID, "text": "🔍 Connection test"},
+            timeout=5
+        )
+        response.raise_for_status()
+        
+        return True
+        
+    except requests.exceptions.HTTPError as http_err:
+        if response.status_code == 400:
+            log_message("❌ Invalid chat ID format")
+        elif response.status_code == 403:
+            log_message("❌ Bot can't message this chat (need /start first)")
+        else:
+            log_message(f"❌ Chat verification failed: {http_err}")
+        return False
+        
+    except Exception as e:
+        log_message(f"❌ Chat verification error: {e}")
         return False
 
 def check_booking(cinema_id, selected_date):
