@@ -7,7 +7,10 @@ import threading
 import json
 import logging
 from flask_socketio import SocketIO, emit
-import calendar
+from dotenv import load_dotenv
+
+# Load .env file for local testing
+load_dotenv()
 
 # === Logging Setup ===
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
@@ -18,6 +21,10 @@ app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-here')
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # === Telegram Bot Setup ===
+# Ensure BOT_TOKEN and CHAT_ID are set in Render's Environment Variables:
+# - Go to Render Dashboard > Your Service > Environment
+# - Add: BOT_TOKEN=your_bot_token_from_botfather
+# - Add: CHAT_ID=your_chat_id (get from @userinfobot or getUpdates API)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
@@ -67,22 +74,22 @@ def log_message(msg):
     if len(logs) > 100:  # Keep only last 100 logs
         logs.pop(0)
     logging.info(msg)
-    # Send to all connected clients
     socketio.emit('log_update', {'message': log_entry})
 
 def send_telegram(msg):
+    if not BOT_TOKEN or not CHAT_ID:
+        log_message("❌ Telegram credentials not configured. Ensure BOT_TOKEN and CHAT_ID are set in environment variables.")
+        return
     try:
-        if not BOT_TOKEN or not CHAT_ID:
-            log_message("❌ Telegram credentials not configured")
-            return
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        res = requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
+        res = requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
         if res.status_code == 200:
-            log_message("📲 Telegram alert sent!")
+            log_message("📲 Telegram alert sent successfully!")
         else:
-            log_message(f"❌ Telegram failed: {res.text}")
+            error_details = res.json().get("description", "Unknown error")
+            log_message(f"❌ Telegram failed: HTTP {res.status_code} - {error_details}")
     except Exception as e:
-        log_message(f"❌ Telegram error: {e}")
+        log_message(f"❌ Telegram error: {str(e)}")
 
 def check_booking(cinema_id, selected_date):
     url = "https://api3.pvrcinemas.com/api/v1/booking/content/csessions"
@@ -152,7 +159,7 @@ def monitor_cinema(cinema_name, cinema_id, selected_date, film_name_filter, scre
                     if time_from and time_to and show_time_str:
                         try:
                             show_time = parse_time_12h(show_time_str)
-                            if not is_time_in_range(show_time, time_from, time_to):
+                            if not is_time_in_range(show_time, time_from, to_time):
                                 continue
                         except Exception:
                             continue
@@ -169,31 +176,30 @@ def monitor_cinema(cinema_name, cinema_id, selected_date, film_name_filter, scre
             show_lines = []
             for show in show_details:
                 show_lines.append(
-                    f"🎬 *{show['movie']}*\n"
-                    f"• 🎥 Screen: {show['screen']}\n"
-                    f"• 🕒 Time: {show['time']}\n"
-                    f"• 💬 Subtitles: {show['subtitle']}\n"
+                    f"<b>{show['movie']}</b><br>"
+                    f"• Screen: {show['screen']}<br>"
+                    f"• Time: {show['time']}<br>"
+                    f"• Subtitles: {show['subtitle']}<br>"
                 )
-            show_details_msg = "\n".join(show_lines)
+            show_details_msg = "<br>".join(show_lines)
             telegram_msg = (
-                f"🎉 *Booking is OPEN!* 🎟️\n\n"
-                f"🗓️ *{selected_date}*\n"
-                f"📍 *PVR: {cinema_name}, Chennai*\n"
+                f"<b>Booking is OPEN!</b><br><br>"
+                f"<b>Date:</b> {selected_date}<br>"
+                f"<b>PVR:</b> {cinema_name}, Chennai<br>"
             )
             if film_name_filter:
-                telegram_msg += f"\n🎬 *Filtered Film:* {film_name_filter}"
+                telegram_msg += f"<br><b>Filtered Film:</b> {film_name_filter}"
             if screen_name_filters:
-                telegram_msg += f"\n *Screens:* {', '.join(screen_name_filters)}"
+                telegram_msg += f"<br><b>Screens:</b> {', '.join(screen_name_filters)}"
             if time_from and time_to:
-                telegram_msg += f"\n🕒 *Show Time:* {time_from.strftime('%I:%M %p')} - {time_to.strftime('%I:%M %p')}"
-            telegram_msg += f"\n\n*Matching Shows:*\n{show_details_msg}"
-            telegram_msg += f"\n🔗 [Book Now](https://www.pvrcinemas.com/cinemasessions/Chennai/qr/{cinema_id})"
+                telegram_msg += f"<br><b>Show Time:</b> {time_from.strftime('%I:%M %p')} - {time_to.strftime('%I:%M %p')}"
+            telegram_msg += f"<br><br><b>Matching Shows:</b><br>{show_details_msg}"
+            telegram_msg += f"<br><a href='https://www.pvrcinemas.com/cinemasessions/Chennai/qr/{cinema_id}'>Book Now</a>"
             
             send_telegram(telegram_msg)
             alert_sent_map[cinema_name] = True
             log_message(f"✅ Booking is open for {cinema_name}!")
             
-            # Send booking found event to all clients
             socketio.emit('booking_found', {
                 'cinema': cinema_name,
                 'shows': show_details,
@@ -212,7 +218,7 @@ def index():
                          theatre_screens=THEATRE_SCREENS,
                          today=datetime.date.today().strftime("%Y-%m-%d"))
 
-@app.route('/start_monitoring', methods=['POST'])
+@app.route('/start_monitoring', methods=['['POST'])
 def start_monitoring():
     global monitoring_flag, monitoring_threads
     
@@ -250,7 +256,7 @@ def start_monitoring():
     monitoring_threads.clear()
     
     log_message(f"✅ Monitoring {', '.join(selected_cinemas)} on {selected_date} every {CHECK_INTERVAL} seconds...")
-    send_telegram(f"🔍 *Monitoring started!*\n\n🎬 *Theatres:* {', '.join(selected_cinemas)}\n📅 *Date:* {selected_date}")
+    send_telegram(f"<b>Monitoring started!</b><br><br><b>Theatres:</b> {', '.join(selected_cinemas)}<br><b>Date:</b> {selected_date}")
     
     # Start monitoring threads
     for cinema in selected_cinemas:
@@ -271,12 +277,12 @@ def stop_monitoring():
     global monitoring_flag
     monitoring_flag.set()
     log_message("🛑 Monitoring stopped.")
-    send_telegram("🛑 *Monitoring stopped manually.*")
+    send_telegram("<b>Monitoring stopped manually.</b>")
     return jsonify({'success': True, 'message': 'Monitoring stopped'})
 
 @app.route('/test_telegram', methods=['POST'])
 def test_telegram():
-    test_msg = "🧪 *Test Notification* 🧪\n\n✅ Telegram alerts are working!\n\nYou'll receive booking alerts like this when shows become available.\n\n🎬 *PVR Booking Monitor* - Ready to go!"
+    test_msg = "<b>Test Notification</b><br><br>✅ Telegram alerts are working!<br><br>You'll receive booking alerts like this when shows become available.<br><br><b>PVR Booking Monitor</b> - Ready to go!"
     send_telegram(test_msg)
     log_message("🧪 Test notification sent to Telegram!")
     return jsonify({'success': True, 'message': 'Test notification sent'})
@@ -300,7 +306,6 @@ def get_screens(cinema):
 @socketio.on('connect')
 def handle_connect():
     log_message(f"🔗 Client connected")
-    # Send current logs to new client
     emit('initial_logs', {'logs': logs})
 
 @socketio.on('disconnect')
@@ -309,6 +314,5 @@ def handle_disconnect():
 
 if __name__ == '__main__':
     log_message("🚀 PVR Booking Monitor Web App started!")
-    port = int(os.environ.get('PORT', 5000))
-    socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
-
+    # For local testing only; Render uses gunicorn
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
