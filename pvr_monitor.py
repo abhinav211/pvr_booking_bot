@@ -21,12 +21,18 @@ app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-here')
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # === Telegram Bot Setup ===
-# Ensure BOT_TOKEN and CHAT_ID are set in Render's Environment Variables:
-# - Go to Render Dashboard > Your Service > Environment
-# - Add: BOT_TOKEN=your_bot_token_from_botfather
-# - Add: CHAT_ID=your_chat_id (get from @userinfobot or getUpdates API)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+
+# Log Telegram credentials status at startup
+if not BOT_TOKEN or not CHAT_ID:
+    logging.warning("⚠️ Telegram credentials not fully configured!")
+    if not BOT_TOKEN:
+        logging.warning("Missing BOT_TOKEN in environment variables")
+    if not CHAT_ID:
+        logging.warning("Missing CHAT_ID in environment variables")
+else:
+    logging.info("✅ Telegram credentials found in environment variables")
 
 # === Cinema Code Map ===
 CINEMA_CODES = {
@@ -79,22 +85,39 @@ def log_message(msg):
 def send_telegram(msg):
     if not BOT_TOKEN or not CHAT_ID:
         log_message("❌ Telegram credentials not configured. Ensure BOT_TOKEN and CHAT_ID are set in environment variables.")
-        return
+        return False
+    
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        res = requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
+        params = {
+            "chat_id": CHAT_ID,
+            "text": msg,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+        
+        start_time = time.time()
+        res = requests.post(url, json=params, timeout=10)
+        elapsed_time = (time.time() - start_time) * 1000  # in milliseconds
+        
         if res.status_code == 200:
-            log_message("📲 Telegram alert sent successfully!")
+            log_message(f"📲 Telegram alert sent successfully! (Response time: {elapsed_time:.2f}ms)")
+            return True
         else:
-            error_details = res.json().get("description", "Unknown error")
+            error_details = res.json().get("description", res.text)
             log_message(f"❌ Telegram failed: HTTP {res.status_code} - {error_details}")
+            return False
+    except requests.exceptions.RequestException as e:
+        log_message(f"❌ Telegram connection error: {str(e)}")
+        return False
     except Exception as e:
-        log_message(f"❌ Telegram error: {str(e)}")
+        log_message(f"❌ Unexpected Telegram error: {str(e)}")
+        return False
 
 def check_booking(cinema_id, selected_date):
     url = "https://api3.pvrcinemas.com/api/v1/booking/content/csessions"
     headers = {
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
         "Accept": "application/json",
         "Content-Type": "application/json",
         "Authorization": "Bearer",
@@ -104,6 +127,7 @@ def check_booking(cinema_id, selected_date):
         "appVersion": "1.0",
         "platform": "WEBSITE",
         "Origin": "https://www.pvrcinemas.com",
+        "Referer": "https://www.pvrcinemas.com/",
     }
     payload = {
         "city": "Chennai",
@@ -115,101 +139,138 @@ def check_booking(cinema_id, selected_date):
         "cineType": "",
         "cineTypeQR": ""
     }
-    for _ in range(3):
+    
+    retry_count = 3
+    for attempt in range(retry_count):
         try:
-            res = requests.post(url, headers=headers, json=payload, timeout=10)
+            start_time = time.time()
+            res = requests.post(url, headers=headers, json=payload, timeout=15)
+            elapsed_time = (time.time() - start_time) * 1000  # in milliseconds
+            
+            if res.status_code != 200:
+                log_message(f"⚠️ API attempt {attempt + 1} failed with status {res.status_code} for {cinema_id}")
+                if attempt < retry_count - 1:
+                    time.sleep(2)
+                continue
+                
             data = res.json()
+            log_message(f"✅ API success for {cinema_id} (Response time: {elapsed_time:.2f}ms)")
             return data.get("output", {}).get("cinemaMovieSessions", [])
-        except Exception as e:
-            log_message(f"Retry due to API error: {e}")
-            time.sleep(2)
+            
+        except requests.exceptions.RequestException as e:
+            log_message(f"⚠️ API attempt {attempt + 1} failed with error: {str(e)}")
+            if attempt < retry_count - 1:
+                time.sleep(2)
+            continue
+        except json.JSONDecodeError:
+            log_message(f"⚠️ API attempt {attempt + 1} failed to decode JSON response")
+            if attempt < retry_count - 1:
+                time.sleep(2)
+            continue
+    
+    log_message(f"❌ All API attempts failed for {cinema_id}")
     return []
 
 def parse_time_12h(timestr):
-    return datetime.datetime.strptime(timestr, "%I:%M %p").time()
+    try:
+        return datetime.datetime.strptime(timestr, "%I:%M %p").time()
+    except ValueError:
+        log_message(f"⚠️ Failed to parse time string: {timestr}")
+        return None
 
 def is_time_in_range(show_time, from_time, to_time):
+    if not all([show_time, from_time, to_time]):
+        return True  # If any time is invalid, consider it in range
+    
     if from_time <= to_time:
         return from_time <= show_time <= to_time
     else:
         return show_time >= from_time or show_time <= to_time
 
 def monitor_cinema(cinema_name, cinema_id, selected_date, film_name_filter, screen_name_filters, time_from, time_to):
+    log_message(f"🔍 Starting monitoring for {cinema_name} on {selected_date}")
+    
     while not alert_sent_map.get(cinema_name) and not monitoring_flag.is_set():
-        log_message(f"⏳ Checking {cinema_name}...")
-        sessions = check_booking(cinema_id, selected_date)
-        found = False
-        show_details = []
-        
-        for session in sessions:
-            movie = session.get("movieRe", {})
-            film_name = movie.get("filmName", "")
-            if film_name_filter and film_name_filter.lower() not in film_name.lower():
-                continue
+        try:
+            log_message(f"⏳ Checking {cinema_name}...")
+            sessions = check_booking(cinema_id, selected_date)
+            found = False
+            show_details = []
             
-            for exp in session.get("experienceSessions", []):
-                for show in exp.get("shows", []):
-                    screen_name = show.get("screenName", "")
-                    show_time_str = show.get("showTime", "")
-                    subtitle = show.get("subtitle", False)
-                    
-                    if screen_name_filters and screen_name not in screen_name_filters:
-                        continue
-                    
-                    if time_from and time_to and show_time_str:
-                        try:
-                            show_time = parse_time_12h(show_time_str)
+            for session in sessions:
+                movie = session.get("movieRe", {})
+                film_name = movie.get("filmName", "")
+                if film_name_filter and film_name_filter.lower() not in film_name.lower():
+                    continue
+                
+                for exp in session.get("experienceSessions", []):
+                    for show in exp.get("shows", []):
+                        screen_name = show.get("screenName", "")
+                        show_time_str = show.get("showTime", "")
+                        subtitle = show.get("subtitle", False)
+                        
+                        if screen_name_filters and screen_name not in screen_name_filters:
+                            continue
+                        
+                        show_time = parse_time_12h(show_time_str) if show_time_str else None
+                        if time_from and time_to and show_time:
                             if not is_time_in_range(show_time, time_from, to_time):
                                 continue
-                        except Exception:
-                            continue
-                    
-                    show_details.append({
-                        "movie": film_name,
-                        "screen": screen_name,
-                        "time": show_time_str,
-                        "subtitle": "Yes" if subtitle else "No"
-                    })
-                    found = True
-        
-        if found and show_details:
-            show_lines = []
-            for show in show_details:
-                show_lines.append(
-                    f"<b>{show['movie']}</b><br>"
-                    f"• Screen: {show['screen']}<br>"
-                    f"• Time: {show['time']}<br>"
-                    f"• Subtitles: {show['subtitle']}<br>"
+                        
+                        show_details.append({
+                            "movie": film_name,
+                            "screen": screen_name,
+                            "time": show_time_str,
+                            "subtitle": "Yes" if subtitle else "No",
+                            "booking_link": f"https://www.pvrcinemas.com/cinemasessions/Chennai/qr/{cinema_id}"
+                        })
+                        found = True
+            
+            if found and show_details:
+                show_lines = []
+                for show in show_details:
+                    show_lines.append(
+                        f"<b>{show['movie']}</b><br>"
+                        f"• Screen: {show['screen']}<br>"
+                        f"• Time: {show['time']}<br>"
+                        f"• Subtitles: {show['subtitle']}<br>"
+                    )
+                show_details_msg = "<br>".join(show_lines)
+                
+                telegram_msg = (
+                    f"<b>🎬 Booking is OPEN!</b><br><br>"
+                    f"<b>📅 Date:</b> {selected_date}<br>"
+                    f"<b>🏢 PVR:</b> {cinema_name}, Chennai<br>"
                 )
-            show_details_msg = "<br>".join(show_lines)
-            telegram_msg = (
-                f"<b>Booking is OPEN!</b><br><br>"
-                f"<b>Date:</b> {selected_date}<br>"
-                f"<b>PVR:</b> {cinema_name}, Chennai<br>"
-            )
-            if film_name_filter:
-                telegram_msg += f"<br><b>Filtered Film:</b> {film_name_filter}"
-            if screen_name_filters:
-                telegram_msg += f"<br><b>Screens:</b> {', '.join(screen_name_filters)}"
-            if time_from and time_to:
-                telegram_msg += f"<br><b>Show Time:</b> {time_from.strftime('%I:%M %p')} - {time_to.strftime('%I:%M %p')}"
-            telegram_msg += f"<br><br><b>Matching Shows:</b><br>{show_details_msg}"
-            telegram_msg += f"<br><a href='https://www.pvrcinemas.com/cinemasessions/Chennai/qr/{cinema_id}'>Book Now</a>"
+                
+                if film_name_filter:
+                    telegram_msg += f"<br><b>🎥 Filtered Film:</b> {film_name_filter}"
+                if screen_name_filters:
+                    telegram_msg += f"<br><b>📺 Screens:</b> {', '.join(screen_name_filters)}"
+                if time_from and time_to:
+                    telegram_msg += f"<br><b>⏰ Show Time:</b> {time_from.strftime('%I:%M %p')} - {time_to.strftime('%I:%M %p')}"
+                
+                telegram_msg += f"<br><br><b>🎭 Matching Shows:</b><br>{show_details_msg}"
+                telegram_msg += f"<br><br><a href='https://www.pvrcinemas.com/cinemasessions/Chennai/qr/{cinema_id}'>🎟️ Book Now</a>"
+                
+                if send_telegram(telegram_msg):
+                    alert_sent_map[cinema_name] = True
+                    log_message(f"✅ Booking is open for {cinema_name}!")
+                    
+                    socketio.emit('booking_found', {
+                        'cinema': cinema_name,
+                        'shows': show_details,
+                        'date': selected_date
+                    })
+                    return
+            else:
+                log_message(f"🚫 No matching shows at {cinema_name}")
             
-            send_telegram(telegram_msg)
-            alert_sent_map[cinema_name] = True
-            log_message(f"✅ Booking is open for {cinema_name}!")
+            time.sleep(CHECK_INTERVAL)
             
-            socketio.emit('booking_found', {
-                'cinema': cinema_name,
-                'shows': show_details,
-                'date': selected_date
-            })
-            return
-        else:
-            log_message(f"🚫 No matching shows at {cinema_name}.")
-        
-        time.sleep(CHECK_INTERVAL)
+        except Exception as e:
+            log_message(f"⚠️ Error in monitoring thread for {cinema_name}: {str(e)}")
+            time.sleep(10)  # Wait before retrying after an error
 
 @app.route('/')
 def index():
@@ -218,7 +279,7 @@ def index():
                          theatre_screens=THEATRE_SCREENS,
                          today=datetime.date.today().strftime("%Y-%m-%d"))
 
-@app.route('/start_monitoring', methods=['['POST'])
+@app.route('/start_monitoring', methods=['POST'])
 def start_monitoring():
     global monitoring_flag, monitoring_threads
     
@@ -240,26 +301,30 @@ def start_monitoring():
     try:
         datetime.datetime.strptime(selected_date, "%Y-%m-%d")
     except ValueError:
-        return jsonify({'error': 'Invalid date format'}), 400
+        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
     
     time_from = time_to = None
     if time_from_str and time_to_str:
         try:
             time_from = parse_time_12h(time_from_str)
             time_to = parse_time_12h(time_to_str)
-        except Exception:
-            return jsonify({'error': 'Invalid time format. Use format like 04:00 PM'}), 400
+            if not time_from or not time_to:
+                return jsonify({'error': 'Invalid time format. Use format like 04:00 PM'}), 400
+        except Exception as e:
+            return jsonify({'error': f'Invalid time format: {str(e)}. Use format like 04:00 PM'}), 400
     
     # Clear previous monitoring
     monitoring_flag.clear()
     alert_sent_map.clear()
     monitoring_threads.clear()
     
-    log_message(f"✅ Monitoring {', '.join(selected_cinemas)} on {selected_date} every {CHECK_INTERVAL} seconds...")
-    send_telegram(f"<b>Monitoring started!</b><br><br><b>Theatres:</b> {', '.join(selected_cinemas)}<br><b>Date:</b> {selected_date}")
+    log_message(f"✅ Starting monitoring for {', '.join(selected_cinemas)} on {selected_date}")
     
     # Start monitoring threads
     for cinema in selected_cinemas:
+        if cinema not in CINEMA_CODES:
+            return jsonify({'error': f'Invalid cinema selected: {cinema}'}), 400
+        
         cinema_id = CINEMA_CODES[cinema]
         alert_sent_map[cinema] = False
         thread = threading.Thread(
@@ -270,49 +335,130 @@ def start_monitoring():
         thread.start()
         monitoring_threads.append(thread)
     
-    return jsonify({'success': True, 'message': 'Monitoring started successfully'})
+    # Send startup notification if Telegram is configured
+    if BOT_TOKEN and CHAT_ID:
+        telegram_msg = (
+            f"<b>🔔 Monitoring Started!</b><br><br>"
+            f"<b>🏢 Theatres:</b> {', '.join(selected_cinemas)}<br>"
+            f"<b>📅 Date:</b> {selected_date}<br>"
+        )
+        if film_name_filter:
+            telegram_msg += f"<b>🎥 Film Filter:</b> {film_name_filter}<br>"
+        if screen_name_filters:
+            telegram_msg += f"<b>📺 Screen Filter:</b> {', '.join(screen_name_filters)}<br>"
+        if time_from and time_to:
+            telegram_msg += f"<b>⏰ Time Range:</b> {time_from.strftime('%I:%M %p')} - {time_to.strftime('%I:%M %p')}<br>"
+        telegram_msg += f"<br>Will check every {CHECK_INTERVAL} seconds for open bookings."
+        
+        send_telegram(telegram_msg)
+    
+    return jsonify({
+        'success': True,
+        'message': f'Monitoring started for {len(selected_cinemas)} cinema(s)',
+        'check_interval': CHECK_INTERVAL
+    })
 
 @app.route('/stop_monitoring', methods=['POST'])
 def stop_monitoring():
     global monitoring_flag
     monitoring_flag.set()
-    log_message("🛑 Monitoring stopped.")
-    send_telegram("<b>Monitoring stopped manually.</b>")
-    return jsonify({'success': True, 'message': 'Monitoring stopped'})
+    log_message("🛑 Monitoring stopped by user request")
+    
+    if BOT_TOKEN and CHAT_ID:
+        send_telegram("<b>🔕 Monitoring Stopped</b><br><br>The monitoring service has been stopped manually.")
+    
+    return jsonify({
+        'success': True,
+        'message': 'Monitoring stopped',
+        'active_threads': len(monitoring_threads)
+    })
 
 @app.route('/test_telegram', methods=['POST'])
 def test_telegram():
-    test_msg = "<b>Test Notification</b><br><br>✅ Telegram alerts are working!<br><br>You'll receive booking alerts like this when shows become available.<br><br><b>PVR Booking Monitor</b> - Ready to go!"
-    send_telegram(test_msg)
-    log_message("🧪 Test notification sent to Telegram!")
-    return jsonify({'success': True, 'message': 'Test notification sent'})
+    if not BOT_TOKEN or not CHAT_ID:
+        return jsonify({
+            'success': False,
+            'message': 'Telegram not configured. Set BOT_TOKEN and CHAT_ID in environment variables.'
+        }), 400
+    
+    test_msg = (
+        "<b>🔔 Test Notification</b><br><br>"
+        "✅ Telegram alerts are working properly!<br><br>"
+        "You'll receive booking alerts like this when shows become available.<br><br>"
+        "<b>PVR Booking Monitor</b> - Ready to go!"
+    )
+    
+    if send_telegram(test_msg):
+        log_message("🧪 Test notification sent to Telegram successfully!")
+        return jsonify({
+            'success': True,
+            'message': 'Test notification sent successfully'
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'message': 'Failed to send test notification'
+        }), 500
 
 @app.route('/get_logs')
 def get_logs():
-    return jsonify({'logs': logs})
+    return jsonify({
+        'success': True,
+        'logs': logs,
+        'count': len(logs)
+    })
 
 @app.route('/clear_logs', methods=['POST'])
 def clear_logs():
     global logs
     logs.clear()
-    log_message("🗑️ Logs cleared")
-    return jsonify({'success': True, 'message': 'Logs cleared'})
+    log_message("🗑️ Logs cleared by user request")
+    return jsonify({
+        'success': True,
+        'message': 'Logs cleared',
+        'remaining_logs': len(logs)
+    })
 
 @app.route('/get_screens/<cinema>')
 def get_screens(cinema):
-    screens = THEATRE_SCREENS.get(cinema, [])
-    return jsonify({'screens': screens})
+    if cinema not in THEATRE_SCREENS:
+        return jsonify({'success': False, 'error': 'Invalid cinema name'}), 404
+    
+    return jsonify({
+        'success': True,
+        'cinema': cinema,
+        'screens': THEATRE_SCREENS[cinema]
+    })
+
+@app.route('/status')
+def status():
+    return jsonify({
+        'status': 'running',
+        'telegram_configured': bool(BOT_TOKEN and CHAT_ID),
+        'active_monitoring': not monitoring_flag.is_set(),
+        'monitoring_threads': len(monitoring_threads),
+        'last_logs_count': len(logs),
+        'check_interval': CHECK_INTERVAL
+    })
 
 @socketio.on('connect')
 def handle_connect():
-    log_message(f"🔗 Client connected")
+    log_message("🔗 New client connected via WebSocket")
     emit('initial_logs', {'logs': logs})
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    log_message(f"🔌 Client disconnected")
+    log_message("🔌 Client disconnected from WebSocket")
 
 if __name__ == '__main__':
     log_message("🚀 PVR Booking Monitor Web App started!")
+    log_message(f"Telegram configured: {'✅' if BOT_TOKEN and CHAT_ID else '❌'}")
+    if BOT_TOKEN and CHAT_ID:
+        log_message("Testing Telegram connection...")
+        if send_telegram("<b>🔔 PVR Monitor Startup</b><br><br>Service has started successfully!"):
+            log_message("✅ Telegram connection test successful")
+        else:
+            log_message("❌ Telegram connection test failed")
+    
     # For local testing only; Render uses gunicorn
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
