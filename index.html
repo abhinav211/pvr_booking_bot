@@ -330,12 +330,23 @@
                 <div class="form-group">
                     <label>Select Cinemas:</label>
                     <div class="checkbox-grid" id="cinemas-grid">
-                        {% for cinema in cinemas %}
+                        <!-- Sample cinemas for demo -->
                         <div class="checkbox-item">
-                            <input type="checkbox" id="cinema-{{ loop.index }}" name="cinemas" value="{{ cinema }}">
-                            <label for="cinema-{{ loop.index }}">{{ cinema }}</label>
+                            <input type="checkbox" id="cinema-1" name="cinemas" value="PVR Ampa Mall">
+                            <label for="cinema-1">PVR Ampa Mall</label>
                         </div>
-                        {% endfor %}
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="cinema-2" name="cinemas" value="PVR Phoenix MarketCity">
+                            <label for="cinema-2">PVR Phoenix MarketCity</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="cinema-3" name="cinemas" value="PVR Express Avenue">
+                            <label for="cinema-3">PVR Express Avenue</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="cinema-4" name="cinemas" value="PVR Palazzo">
+                            <label for="cinema-4">PVR Palazzo</label>
+                        </div>
                     </div>
                     <div class="button-group">
                         <button class="btn btn-secondary" onclick="selectAllCinemas()">Select All</button>
@@ -345,7 +356,7 @@
 
                 <div class="form-group">
                     <label for="date">Select Date:</label>
-                    <input type="date" id="date" name="date" value="{{ today }}" min="{{ today }}">
+                    <input type="date" id="date" name="date" value="2025-07-07" min="2025-07-07">
                 </div>
 
                 <div class="form-group">
@@ -440,4 +451,206 @@
         });
 
         function updateScreens() {
-            const selectedCinemas = Array.from(document.querySelectorAll('input[
+            const selectedCinemas = Array.from(document.querySelectorAll('input[name="cinemas"]:checked'))
+                .map(cb => cb.value);
+            
+            const screensGrid = document.getElementById('screens-grid');
+            screensGrid.innerHTML = '';
+            
+            if (selectedCinemas.length === 0) {
+                screensGrid.innerHTML = '<div class="checkbox-item">Select cinemas first to see available screens</div>';
+                return;
+            }
+            
+            // Sample screens for demonstration
+            const screenOptions = [
+                'Screen 1', 'Screen 2', 'Screen 3', 'Screen 4', 'Screen 5',
+                'IMAX', 'Dolby Atmos', 'Premium', 'Recliner', 'Gold Class',
+                'Director\'s Cut', 'Luxe', 'Prime', 'Elite', 'VIP'
+            ];
+            
+            screenOptions.forEach((screen, index) => {
+                const checkboxItem = document.createElement('div');
+                checkboxItem.className = 'checkbox-item';
+                checkboxItem.innerHTML = `
+                    <input type="checkbox" id="screen-${index}" name="screens" value="${screen}">
+                    <label for="screen-${index}">${screen}</label>
+                `;
+                screensGrid.appendChild(checkboxItem);
+            });
+        }
+
+        function selectAllCinemas() {
+            const checkboxes = document.querySelectorAll('input[name="cinemas"]');
+            checkboxes.forEach(cb => cb.checked = true);
+            updateScreens();
+        }
+
+        function clearAllCinemas() {
+            const checkboxes = document.querySelectorAll('input[name="cinemas"]');
+            checkboxes.forEach(cb => cb.checked = false);
+            updateScreens();
+        }
+
+        function selectAllScreens() {
+            const checkboxes = document.querySelectorAll('input[name="screens"]');
+            checkboxes.forEach(cb => cb.checked = true);
+        }
+
+        function clearAllScreens() {
+            const checkboxes = document.querySelectorAll('input[name="screens"]');
+            checkboxes.forEach(cb => cb.checked = false);
+        }
+
+        function startMonitoring() {
+            const selectedCinemas = Array.from(document.querySelectorAll('input[name="cinemas"]:checked'))
+                .map(cb => cb.value);
+            
+            if (selectedCinemas.length === 0) {
+                showNotification('Please select at least one cinema', 'error');
+                return;
+            }
+            
+            const date = document.getElementById('date').value;
+            if (!date) {
+                showNotification('Please select a date', 'error');
+                return;
+            }
+            
+            const config = {
+                cinemas: selectedCinemas,
+                date: date,
+                filmName: document.getElementById('film-name').value,
+                screens: Array.from(document.querySelectorAll('input[name="screens"]:checked'))
+                    .map(cb => cb.value),
+                timeFrom: document.getElementById('time-from').value,
+                timeTo: document.getElementById('time-to').value
+            };
+            
+            socket.emit('start_monitoring', config);
+            
+            isMonitoring = true;
+            document.getElementById('start-btn').disabled = true;
+            document.getElementById('stop-btn').disabled = false;
+            
+            const statusIndicator = document.getElementById('status-indicator');
+            statusIndicator.className = 'status-indicator status-active';
+            statusIndicator.textContent = '🟢 Monitoring Active';
+            
+            addLog(`Started monitoring for ${selectedCinemas.length} cinemas on ${date}`);
+            showNotification('Monitoring started successfully!', 'success');
+        }
+
+        function stopMonitoring() {
+            socket.emit('stop_monitoring');
+            
+            isMonitoring = false;
+            document.getElementById('start-btn').disabled = false;
+            document.getElementById('stop-btn').disabled = true;
+            
+            const statusIndicator = document.getElementById('status-indicator');
+            statusIndicator.className = 'status-indicator status-inactive';
+            statusIndicator.textContent = '🔴 Monitoring Stopped';
+            
+            addLog('Monitoring stopped by user');
+            showNotification('Monitoring stopped', 'info');
+        }
+
+        function testTelegram() {
+            socket.emit('test_telegram');
+            showNotification('Telegram test message sent!', 'info');
+            addLog('Telegram test message sent');
+        }
+
+        function clearLogs() {
+            document.getElementById('logs-content').textContent = '';
+            showNotification('Logs cleared', 'info');
+        }
+
+        function addLog(message) {
+            const timestamp = new Date().toLocaleString();
+            const logMessage = `[${timestamp}] ${message}`;
+            const logsContent = document.getElementById('logs-content');
+            logsContent.textContent += logMessage + '\n';
+            logsContent.scrollTop = logsContent.scrollHeight;
+        }
+
+        function showNotification(message, type = 'info') {
+            const notification = document.createElement('div');
+            notification.className = `notification ${type}`;
+            notification.textContent = message;
+            
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.remove();
+            }, 5000);
+        }
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            // Set today's date as default
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('date').value = today;
+            document.getElementById('date').min = today;
+            
+            // Initial log
+            addLog('PVR Booking Monitor initialized');
+            
+            // Request initial logs from server
+            socket.emit('get_initial_logs');
+        });
+
+        // Handle socket connection events
+        socket.on('connect', function() {
+            addLog('Connected to monitoring server');
+            showNotification('Connected to server', 'success');
+        });
+
+        socket.on('disconnect', function() {
+            addLog('Disconnected from monitoring server');
+            showNotification('Disconnected from server', 'error');
+            
+            // Reset monitoring state
+            if (isMonitoring) {
+                stopMonitoring();
+            }
+        });
+
+        socket.on('monitoring_status', function(data) {
+            if (data.status === 'active') {
+                isMonitoring = true;
+                document.getElementById('start-btn').disabled = true;
+                document.getElementById('stop-btn').disabled = false;
+                
+                const statusIndicator = document.getElementById('status-indicator');
+                statusIndicator.className = 'status-indicator status-active';
+                statusIndicator.textContent = '🟢 Monitoring Active';
+            } else {
+                isMonitoring = false;
+                document.getElementById('start-btn').disabled = false;
+                document.getElementById('stop-btn').disabled = true;
+                
+                const statusIndicator = document.getElementById('status-indicator');
+                statusIndicator.className = 'status-indicator status-inactive';
+                statusIndicator.textContent = '🔴 Monitoring Stopped';
+            }
+        });
+
+        socket.on('error', function(data) {
+            addLog(`Error: ${data.message}`);
+            showNotification(`Error: ${data.message}`, 'error');
+        });
+
+        socket.on('telegram_test_result', function(data) {
+            if (data.success) {
+                addLog('Telegram test successful');
+                showNotification('Telegram test successful!', 'success');
+            } else {
+                addLog(`Telegram test failed: ${data.error}`);
+                showNotification(`Telegram test failed: ${data.error}`, 'error');
+            }
+        });
+    </script>
+</body>
+</html>
