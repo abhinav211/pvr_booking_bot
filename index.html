@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🍿 PVR Booking Monitor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            color: white;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .panel {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            backdrop-filter: blur(10px);
+        }
+
+        .panel h2 {
+            color: #4a5568;
+            margin-bottom: 20px;
+            font-size: 1.4em;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 10px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #4a5568;
+        }
+
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s ease;
+        }
+
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .checkbox-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            max-height: 300px;
+            overflow-y: auto;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 15px;
+        }
+
+        .checkbox-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px;
+            border-radius: 6px;
+            transition: background-color 0.2s ease;
+        }
+
+        .checkbox-item:hover {
+            background-color: #f7fafc;
+        }
+
+        .checkbox-item input[type="checkbox"] {
+            width: auto;
+            margin: 0;
+            transform: scale(1.2);
+        }
+
+        .checkbox-item label {
+            margin: 0;
+            font-weight: normal;
+            cursor: pointer;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            color: white;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        .btn-secondary {
+            background: #e2e8f0;
+            color: #4a5568;
+        }
+
+        .btn-secondary:hover {
+            background: #cbd5e0;
+        }
+
+        .btn-danger {
+            background: linear-gradient(45deg, #fc8181, #f56565);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(245, 101, 101, 0.4);
+        }
+
+        .btn-success {
+            background: linear-gradient(45deg, #68d391, #48bb78);
+            color: white;
+        }
+
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(72, 187, 120, 0.4);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: 600;
+            margin-top: 15px;
+        }
+
+        .status-active {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .status-inactive {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+
+        .logs-panel {
+            grid-column: 1 / -1;
+            background: #1a202c;
+            color: #e2e8f0;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+
+        .logs-panel h2 {
+            color: #e2e8f0;
+            border-bottom-color: #4a5568;
+        }
+
+        .logs-content {
+            background: #2d3748;
+            border-radius: 8px;
+            padding: 15px;
+            font-size: 14px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .time-inputs {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 15px 20px;
+            border-radius: 8px;
+            color: white;
+            font-weight: 600;
+            z-index: 1000;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .notification.success {
+            background: linear-gradient(45deg, #68d391, #48bb78);
+        }
+
+        .notification.error {
+            background: linear-gradient(45deg, #fc8181, #f56565);
+        }
+
+        .notification.info {
+            background: linear-gradient(45deg, #63b3ed, #4299e1);
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .footer {
+            text-align: center;
+            color: white;
+            margin-top: 30px;
+            padding: 20px;
+            opacity: 0.8;
+        }
+
+        .footer a {
+            color: #68d391;
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+            
+            .checkbox-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .time-inputs {
+                grid-template-columns: 1fr;
+            }
+            
+            .button-group {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🍿 PVR Booking Monitor</h1>
+            <p>Never miss a movie booking in Chennai!</p>
+        </div>
+
+        <div class="main-content">
+            <div class="panel">
+                <h2>🎬 Configuration</h2>
+                
+                <div class="form-group">
+                    <label>Select Cinemas:</label>
+                    <div class="checkbox-grid" id="cinemas-grid">
+                        {% for cinema in cinemas %}
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="cinema-{{ loop.index }}" name="cinemas" value="{{ cinema }}">
+                            <label for="cinema-{{ loop.index }}">{{ cinema }}</label>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <div class="button-group">
+                        <button class="btn btn-secondary" onclick="selectAllCinemas()">Select All</button>
+                        <button class="btn btn-secondary" onclick="clearAllCinemas()">Clear All</button>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="date">Select Date:</label>
+                    <input type="date" id="date" name="date" value="{{ today }}" min="{{ today }}">
+                </div>
+
+                <div class="form-group">
+                    <label for="film-name">Film Name (optional):</label>
+                    <input type="text" id="film-name" name="film-name" placeholder="e.g., Avengers">
+                </div>
+
+                <div class="form-group">
+                    <label>Screen Names (optional):</label>
+                    <div class="checkbox-grid" id="screens-grid">
+                        <!-- Screens will be populated dynamically -->
+                    </div>
+                    <div class="button-group">
+                        <button class="btn btn-secondary" onclick="selectAllScreens()">Select All</button>
+                        <button class="btn btn-secondary" onclick="clearAllScreens()">Clear All</button>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Show Time Range (optional):</label>
+                    <div class="time-inputs">
+                        <div>
+                            <label for="time-from">From:</label>
+                            <input type="text" id="time-from" name="time-from" placeholder="e.g., 04:00 PM">
+                        </div>
+                        <div>
+                            <label for="time-to">To:</label>
+                            <input type="text" id="time-to" name="time-to" placeholder="e.g., 10:00 PM">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="button-group">
+                    <button class="btn btn-primary" id="start-btn" onclick="startMonitoring()">
+                        ▶️ Start Monitoring
+                    </button>
+                    <button class="btn btn-danger" id="stop-btn" onclick="stopMonitoring()" disabled>
+                        ⏹️ Stop Monitoring
+                    </button>
+                    <button class="btn btn-success" onclick="testTelegram()">
+                        🧪 Test Telegram
+                    </button>
+                </div>
+
+                <div class="status-indicator status-inactive" id="status-indicator">
+                    🔴 Monitoring Stopped
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>📋 Activity Logs</h2>
+                <div class="button-group">
+                    <button class="btn btn-secondary" onclick="clearLogs()">Clear Logs</button>
+                </div>
+                <div class="logs-content" id="logs-content">
+                    Waiting for logs...
+                </div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>Made by <a href="https://github.com/sureshpk36" target="_blank">Suresh</a> 🚀</p>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let isMonitoring = false;
+
+        // Socket event handlers
+        socket.on('log_update', function(data) {
+            const logsContent = document.getElementById('logs-content');
+            logsContent.textContent += data.message + '\n';
+            logsContent.scrollTop = logsContent.scrollHeight;
+        });
+
+        socket.on('initial_logs', function(data) {
+            const logsContent = document.getElementById('logs-content');
+            logsContent.textContent = data.logs.join('\n');
+            logsContent.scrollTop = logsContent.scrollHeight;
+        });
+
+        socket.on('booking_found', function(data) {
+            showNotification(`🎉 Booking Open! Found ${data.shows.length} shows at ${data.cinema}`, 'success');
+        });
+
+        // Update screens when cinemas change
+        document.addEventListener('change', function(e) {
+            if (e.target.name === 'cinemas') {
+                updateScreens();
+            }
+        });
+
+        function updateScreens() {
+            const selectedCinemas = Array.from(document.querySelectorAll('input[
